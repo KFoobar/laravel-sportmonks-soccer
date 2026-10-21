@@ -2,11 +2,10 @@
 
 namespace Sportmonks\SoccerAPI\Tests;
 
-use GuzzleHttp\Exception\ClientException;
-use GuzzleHttp\Exception\ConnectException;
-use GuzzleHttp\Exception\ServerException;
-use GuzzleHttp\Psr7\Request;
-use GuzzleHttp\Psr7\Response;
+use Illuminate\Http\Client\Factory;
+use Illuminate\Http\Client\Request;
+use Illuminate\Support\Facades\Http;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Sportmonks\SoccerAPI\Exceptions\ApiRequestException;
 use Sportmonks\SoccerAPI\Facades\SoccerAPI;
 use Sportmonks\SoccerAPI\Requests\League;
@@ -23,106 +22,207 @@ class ClientTest extends TestCase
     public function test_registers_the_facade_and_configuration(): void
     {
         $this->assertInstanceOf(League::class, SoccerAPI::leagues());
-        $this->assertSame('https://soccer.sportmonks.com/api/v2.0/', config('sportmonks.api_url'));
+        $this->assertSame('https://api.sportmonks.com/v3/', config('sportmonks.api_url'));
         $this->assertSame(30, config('sportmonks.timeout'));
     }
 
-    public function test_preserves_query_parameters_and_response_metadata(): void
-    {
-        $league = new League($this->client([new Response(200, [], '{"data":[],"meta":{"pagination":{"total_pages":2}}}')]));
-        $response = $league->setInclude(['country', 'season'])->setLeagues([1, 2])->setPage(2)->setPerPage(20)->all();
-        parse_str($this->history[0]['request']->getUri()->getQuery(), $query);
-
-        $this->assertSame(['api_token' => 'test-token', 'per_page' => '20', 'page' => '2', 'include' => 'country,season', 'tz' => 'UTC', 'leagues' => '1,2'], $query);
-        $this->assertSame(2, $response->meta->pagination->total_pages);
-        $this->assertTrue($this->history[0]['options']['verify']);
-        $this->assertFalse($this->history[0]['options']['allow_redirects']);
-        $this->assertSame(30, $this->history[0]['options']['timeout']);
-        $this->assertSame(10, $this->history[0]['options']['connect_timeout']);
-    }
-
-    public function test_respects_custom_timeouts_and_timezone(): void
+    public function test_uses_v3_authentication_query_parameters_and_secure_options(): void
     {
         config(['sportmonks.timeout' => 8, 'sportmonks.connect_timeout' => 3, 'sportmonks.timezone' => 'Europe/Stockholm']);
-        (new League($this->client([new Response(200, [], '{"data":[]}')])))->all();
-        $this->assertSame(8, $this->history[0]['options']['timeout']);
-        $this->assertSame(3, $this->history[0]['options']['connect_timeout']);
-        $this->assertStringContainsString('tz=Europe%2FStockholm', $this->history[0]['request']->getUri()->getQuery());
+        Http::fake(function (Request $request, array $options) {
+            $this->assertTrue($options['verify']);
+            $this->assertFalse($options['allow_redirects']);
+            $this->assertEquals(8, $options['timeout']);
+            $this->assertEquals(3, $options['connect_timeout']);
+
+            return Http::response(['data' => []]);
+        });
+
+        SoccerAPI::fixtures()->setInclude(['participants', 'scores'])
+            ->setFilters(['fixtureLeagues:501,271', 'fixtureStates:1'])
+            ->setSelect(['id', 'name'])->setPage(2)->setPerPage(20)->all();
+
+        Http::assertSent(function (Request $request): bool {
+            $this->assertSame('GET', $request->method());
+            $this->assertSame(['test-token'], $request->header('Authorization'));
+            $this->assertSame(['application/json'], $request->header('Accept'));
+            $this->assertSame([
+                'per_page' => 20,
+                'page' => 2,
+                'include' => 'participants;scores',
+                'filters' => 'fixtureLeagues:501,271;fixtureStates:1',
+                'select' => 'id,name',
+                'timezone' => 'Europe/Stockholm',
+            ], $request->data());
+            $this->assertStringNotContainsString('test-token', $request->url());
+            $this->assertStringStartsWith('https://api.sportmonks.com/v3/football/fixtures?', $request->url());
+
+            return true;
+        });
+        Http::assertSentCount(1);
     }
 
-    public function test_skip_data_preserves_lists_objects_and_missing_data(): void
+    public function test_preserves_v3_participants_scores_and_metadata(): void
+    {
+        $body = file_get_contents(__DIR__ . '/fixtures/fixture.json');
+        Http::fake(['*' => Http::response($body)]);
+
+        $response = SoccerAPI::fixtures()->setInclude(['participants', 'scores'])->byId(18535517);
+
+        $this->assertSame(18535517, $response->data->id);
+        $this->assertSame('home', $response->data->participants[0]->meta->location);
+        $this->assertSame(2, $response->data->scores[0]->score->goals);
+        $this->assertSame('CURRENT', $response->data->scores[0]->description);
+        $this->assertSame(53, $response->data->scores[0]->participant_id);
+        $this->assertSame(99, $response->rate_limit->remaining);
+        $this->assertSame('UTC', $response->timezone);
+        $this->assertFalse(property_exists($response->data, 'localteam_id'));
+    }
+
+    public function test_preserves_v3_pagination_without_automatically_following_urls(): void
+    {
+        Http::fake(['*' => Http::response([
+            'data' => [['id' => 501]],
+            'pagination' => ['current_page' => 1, 'has_more' => true, 'next_page' => 'https://api.sportmonks.com/v3/football/leagues?page=2'],
+            'rate_limit' => ['remaining' => 99, 'resets_in_seconds' => 30, 'requested_entity' => 'League'],
+        ])]);
+        $response = SoccerAPI::leagues()->all();
+        $this->assertSame(501, $response->data[0]->id);
+        $this->assertTrue($response->pagination->has_more);
+        $this->assertSame(1, $response->pagination->current_page);
+        $this->assertSame(30, $response->rate_limit->resets_in_seconds);
+        Http::assertSentCount(1);
+    }
+
+    public function test_skip_data_preserves_arrays_objects_and_null(): void
     {
         config(['sportmonks.skip_data' => true]);
-        $league = new League($this->client([
-            new Response(200, [], '{"data":[{"id":1}]}'),
-            new Response(200, [], '{"data":{"id":1}}'),
-            new Response(200, [], '{}'),
-        ]));
-        $this->assertSame(1, $league->all()[0]->id);
-        $this->assertSame(1, $league->byId(1)->id);
-        $this->assertNull($league->all());
+        Http::fake(['*' => Http::sequence()->push(['data' => [['id' => 1]]])->push(['data' => ['id' => 1]])->push(['data' => null])]);
+        $this->assertSame(1, SoccerAPI::leagues()->all()[0]->id);
+        $this->assertSame(1, SoccerAPI::leagues()->byId(1)->id);
+        $this->assertNull(SoccerAPI::leagues()->all());
     }
 
-    public function test_rejects_invalid_json_and_non_object_responses(): void
+    #[DataProvider('invalidBodies')]
+    public function test_rejects_invalid_json_and_envelopes(string $body): void
     {
-        foreach (['', '{', 'null', '[]', '"text"', 'false', '123'] as $body) {
-            try {
-                (new League($this->client([new Response(200, [], $body)])))->all();
-                $this->fail('Expected an invalid response exception.');
-            } catch (ApiRequestException $exception) {
-                $this->assertStringContainsString('Sportmonks returned', $exception->getMessage());
-            }
-        }
+        Http::fake(['*' => Http::response($body)]);
+        $this->expectException(ApiRequestException::class);
+        SoccerAPI::leagues()->all();
     }
 
-    public function test_handles_all_legacy_api_error_shapes_and_redacts_tokens(): void
+    public static function invalidBodies(): array
     {
-        foreach (['{"error":"test-token denied"}', '{"error":{"message":"test-token denied","code":401}}', '{"error":{}}', '{"error":[]}', '{"error":null}'] as $body) {
-            try {
-                (new League($this->client([new Response(200, [], $body)])))->all();
-                $this->fail('Expected an API exception.');
-            } catch (ApiRequestException $exception) {
-                $this->assertStringNotContainsString('test-token', $exception->getMessage());
-                $this->assertGreaterThan(0, $exception->getCode());
-            }
-        }
+        return array_map(fn (string $body): array => [$body], ['', '{', 'null', '[]', '"text"', 'false', '123', '{}', '{"data":false}', '{"error":{}}', '{"message":"Denied"}']);
     }
 
-    public function test_preserves_http_exception_types_without_exposing_request_tokens(): void
+    #[DataProvider('errorStatuses')]
+    public function test_http_errors_preserve_status_without_exposing_credentials(int $status): void
     {
-        foreach ([401, 403, 404, 429, 500] as $status) {
-            try {
-                (new League($this->client([new Response($status, ['Retry-After' => '60'], '{"message":"Failure"}')])))->all();
-                $this->fail('Expected an HTTP exception.');
-            } catch (\GuzzleHttp\Exception\RequestException $exception) {
-                $this->assertInstanceOf($status < 500 ? ClientException::class : ServerException::class, $exception);
-                $this->assertSame($status, $exception->getResponse()->getStatusCode());
-                $this->assertSame('60', $exception->getResponse()->getHeaderLine('Retry-After'));
-                $this->assertStringNotContainsString('test-token', (string) $exception->getRequest()->getUri());
-                $this->assertStringNotContainsString('test-token', $exception->getMessage());
-                $this->assertNull($exception->getPrevious());
-            }
-        }
-        $this->assertCount(5, $this->history);
-    }
-
-    public function test_preserves_connection_errors_without_exposing_tokens(): void
-    {
-        $failure = new ConnectException('Timeout test-token', new Request('GET', 'https://soccer.sportmonks.com/?api_token=test-token'));
+        Http::fake(['*' => Http::response(['message' => 'test-token denied'], $status, ['Retry-After' => '60'])]);
         try {
-            (new League($this->client([$failure])))->all();
-            $this->fail('Expected a connection exception.');
-        } catch (ConnectException $exception) {
+            SoccerAPI::leagues()->all();
+            $this->fail('Expected an API exception.');
+        } catch (ApiRequestException $exception) {
+            $this->assertSame($status, $exception->getCode());
+            $this->assertSame(60, $exception->retryAfter());
             $this->assertStringNotContainsString('test-token', $exception->getMessage());
-            $this->assertStringNotContainsString('test-token', (string) $exception->getRequest()->getUri());
             $this->assertNull($exception->getPrevious());
         }
+        Http::assertSentCount(1);
     }
 
-    public function test_does_not_follow_redirects(): void
+    public static function errorStatuses(): array
     {
-        $this->expectException(ApiRequestException::class);
-        $this->expectExceptionCode(302);
-        (new League($this->client([new Response(302, ['Location' => 'https://example.com'])])))->all();
+        return [[301], [401], [403], [404], [422], [429], [500], [503]];
+    }
+
+    public function test_uses_v3_rate_limit_reset_when_retry_header_is_absent(): void
+    {
+        Http::fake(['*' => Http::response(['message' => 'Too Many Attempts.', 'rate_limit' => ['resets_in_seconds' => 1847]], 429)]);
+        try {
+            SoccerAPI::leagues()->all();
+            $this->fail('Expected a rate limit exception.');
+        } catch (ApiRequestException $exception) {
+            $this->assertSame(429, $exception->getCode());
+            $this->assertSame(1847, $exception->retryAfter());
+        }
+        Http::assertSentCount(1);
+    }
+
+    public function test_handles_retry_after_dates_and_non_json_errors(): void
+    {
+        Http::fake(['*' => Http::response('<html>Service unavailable</html>', 503, ['Retry-After' => gmdate(DATE_RFC7231, time() + 60)])]);
+        try {
+            SoccerAPI::leagues()->all();
+            $this->fail('Expected an API exception.');
+        } catch (ApiRequestException $exception) {
+            $this->assertSame(503, $exception->getCode());
+            $this->assertGreaterThanOrEqual(58, $exception->retryAfter());
+            $this->assertLessThanOrEqual(60, $exception->retryAfter());
+        }
+    }
+
+    public function test_reports_connection_failures_without_chaining_credentials(): void
+    {
+        Http::fake(['*' => Http::failedConnection('Timeout test-token')]);
+        try {
+            SoccerAPI::leagues()->all();
+            $this->fail('Expected a connection failure.');
+        } catch (ApiRequestException $exception) {
+            $this->assertSame(0, $exception->getCode());
+            $this->assertNull($exception->retryAfter());
+            $this->assertNull($exception->getPrevious());
+            $this->assertStringNotContainsString('test-token', $exception->getMessage());
+        }
+    }
+
+    public function test_supports_an_injected_http_factory_and_normalizes_base_urls(): void
+    {
+        config(['sportmonks.api_url' => 'https://api.sportmonks.com/v3']);
+        $http = new Factory();
+        $http->preventStrayRequests();
+        $http->fake(['https://api.sportmonks.com/v3/football/leagues*' => Http::response(['data' => []])]);
+        $this->assertSame([], (new League($http))->all()->data);
+        $http->assertSentCount(1);
+    }
+
+    #[DataProvider('invalidSettings')]
+    public function test_rejects_unsafe_settings(string $key, mixed $value): void
+    {
+        config(['sportmonks.' . $key => $value]);
+        $this->expectException(\InvalidArgumentException::class);
+        new League();
+    }
+
+    public static function invalidSettings(): array
+    {
+        return [
+            ['api_url', 'http://api.sportmonks.com/v3/'],
+            ['api_url', 'https://user:password@api.sportmonks.com/v3/'],
+            ['api_url', 'https://api.sportmonks.com/v3/?api_token=secret'],
+            ['api_url', 'https://api.sportmonks.com/v3/#fragment'],
+            ['timeout', 0], ['connect_timeout', -1], ['timeout', INF],
+        ];
+    }
+
+    public function test_empty_query_options_are_omitted(): void
+    {
+        config(['sportmonks.timezone' => null, 'app.timezone' => null]);
+        Http::fake(['*' => Http::response(['data' => []])]);
+        SoccerAPI::leagues()->setInclude([])->setFilters([])->setSelect([])->all();
+        Http::assertSent(fn (Request $request): bool => $request->data() === ['per_page' => 50, 'page' => 1]);
+    }
+
+    #[DataProvider('invalidPagination')]
+    public function test_rejects_invalid_pagination(string $method, int $value): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        SoccerAPI::leagues()->$method($value);
+    }
+
+    public static function invalidPagination(): array
+    {
+        return [['setPage', 0], ['setPage', -1], ['setPerPage', 0], ['setPerPage', 51]];
     }
 }

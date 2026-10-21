@@ -3,16 +3,17 @@
 namespace Sportmonks\SoccerAPI\Requests;
 
 use Sportmonks\SoccerAPI\SoccerAPIClient;
+use stdClass;
 
 class Continent extends SoccerAPIClient
 {
-    public function all()
+    public function all(): stdClass|array|null
     {
-        return $this->callData('continents/');
+        return $this->call('core/continents');
     }
 
-    public function byId($continentId)
+    public function byId(int $continentId): stdClass|array|null
     {
-        return $this->call('continents/' . $continentId);
+        return $this->call("core/continents/{$continentId}");
     }
 }
