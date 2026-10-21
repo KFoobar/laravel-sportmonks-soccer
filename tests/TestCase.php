@@ -1,88 +1,37 @@
 <?php
+
 namespace Sportmonks\SoccerAPI\Tests;
 
-use Illuminate\Foundation\Testing\TestCase as BaseTestCase;
-use Illuminate\Support\Facades\Config;
-use Sportmonks\SoccerAPI\Facades\SoccerAPI;
+use GuzzleHttp\Client;
+use GuzzleHttp\Handler\MockHandler;
+use GuzzleHttp\HandlerStack;
+use GuzzleHttp\Middleware;
+use Orchestra\Testbench\TestCase as BaseTestCase;
 use Sportmonks\SoccerAPI\SoccerAPIServiceProvider;
 
 abstract class TestCase extends BaseTestCase
 {
-    protected $matchId;
-    protected $tvStationMatchId;
-    protected $leagueId;
-    protected $continentId;
-    protected $countryId;
-    protected $fixtureId;
-    protected $teamId;
-    protected $firstTeamId;
-    protected $secondTeamId;
-    protected $seasonId;
-    protected $playerId;
-    protected $bookmakerId;
-    protected $venueId;
-    protected $roundId;
-    protected $team1Id;
-    protected $team2Id;
+    protected $history = [];
 
-    /**
-     * This method is called before each test.
-     */
-    public function setUp(): void
+    protected function getPackageProviders($app): array
     {
-        parent::setup();
-
-        $this->matchId = 18469093;
-        $this->tvStationMatchId = 7611;
-        $this->leagueId = 573;
-        $this->continentId = 1;
-        $this->venueId = 206;
-        $this->roundId = 267056;
-        $this->countryId = 462;
-        $this->teamId = 2535;
-        $this->team1Id = 2535;
-        $this->team2Id = 2353;
-        $this->firstTeamId = 2535;
-        $this->secondTeamId = 2353;
-        $this->seasonId = 19376;
-        $this->playerId = 580;
-        $this->bookmakerId = 1;
-        $this->marketsId = 10;
+        return [SoccerAPIServiceProvider::class];
     }
 
-    /**
-     * This method is called after each test.
-     */
-    protected function tearDown(): void
+    protected function getEnvironmentSetUp($app): void
     {
-        parent::tearDown();
+        $app['config']->set('sportmonks.api_token', 'test-token');
+        $app['config']->set('app.timezone', 'UTC');
     }
 
-    /**
-     * Get package aliases.
-     *
-     * @param  \Illuminate\Foundation\Application  $app
-     *
-     * @return array
-     */
-    protected function getPackageAliases($app)
+    protected function client(array $responses): Client
     {
-        return ['SoccerAPI' => SoccerAPI::class];
-    }
+        $handler = HandlerStack::create(new MockHandler($responses));
+        $handler->push(Middleware::history($this->history));
 
-    /**
-     * Boots the application.
-     *
-     * @return \Illuminate\Foundation\Application
-     */
-    public function createApplication()
-    {
-        $app = require __DIR__.'/../vendor/laravel/laravel/bootstrap/app.php';
-
-        $app->register(SoccerAPIServiceProvider::class);
-
-        $app->make('Illuminate\Contracts\Console\Kernel')->bootstrap();
-
-        return $app;
+        return new Client([
+            'base_uri' => config('sportmonks.api_url'),
+            'handler' => $handler,
+        ]);
     }
 }

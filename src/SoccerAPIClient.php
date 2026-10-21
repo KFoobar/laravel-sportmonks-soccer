@@ -3,6 +3,11 @@
 namespace Sportmonks\SoccerAPI;
 
 use GuzzleHttp\Client;
+use GuzzleHttp\ClientInterface;
+use GuzzleHttp\Exception\ConnectException;
+use GuzzleHttp\Exception\RequestException;
+use GuzzleHttp\Psr7\Uri;
+use JsonException;
 use Sportmonks\SoccerAPI\Exceptions\ApiRequestException;
 
 class SoccerAPIClient
@@ -21,11 +26,11 @@ class SoccerAPIClient
      *
      * @throws \InvalidArgumentException
      */
-    public function __construct()
+    public function __construct(?ClientInterface $client = null)
     {
-        $this->client = new Client([
+        $this->client = $client ?? new Client([
             'base_uri'  => config('sportmonks.api_url'),
-            'verify'    => app('env') !== 'production' ? false : true,
+            'verify'    => true,
         ]);
 
         $this->apiToken = config('sportmonks.api_token');
@@ -73,18 +78,48 @@ class SoccerAPIClient
             $query['leagues'] = $this->leagues;
         }
 
-        $response = $this->client->get($url, ['query' => $query]);
+        try {
+            $response = $this->client->request('GET', $url, [
+                'query' => $query,
+                'verify' => true,
+                'timeout' => config('sportmonks.timeout', 30),
+                'connect_timeout' => config('sportmonks.connect_timeout', 10),
+                'allow_redirects' => false,
+            ]);
+        } catch (ConnectException $exception) {
+            $request = $exception->getRequest();
+            $request = $request->withUri(Uri::withoutQueryValue($request->getUri(), 'api_token'));
 
-        $body = json_decode($response->getBody()->getContents());
+            throw new ConnectException('Unable to connect to Sportmonks.', $request);
+        } catch (RequestException $exception) {
+            $request = $exception->getRequest();
+            $request = $request->withUri(Uri::withoutQueryValue($request->getUri(), 'api_token'));
+            $exceptionClass = get_class($exception);
+
+            throw new $exceptionClass('Sportmonks HTTP request failed.', $request, $exception->getResponse());
+        }
+
+        if ($response->getStatusCode() >= 300) {
+            throw new ApiRequestException('Sportmonks returned an unsuccessful response.', $response->getStatusCode());
+        }
+
+        try {
+            $body = json_decode((string) $response->getBody(), false, 512, JSON_THROW_ON_ERROR);
+        } catch (JsonException $exception) {
+            throw new ApiRequestException('Sportmonks returned invalid JSON.', 0, $exception);
+        }
+
+        if (!is_object($body)) {
+            throw new ApiRequestException('Sportmonks returned an invalid response object.');
+        }
 
         if (property_exists($body, 'error')) {
-            if (is_object($body->error)) {
-                throw new ApiRequestException($body->error->message, $body->error->code);
-            } else {
-                throw new ApiRequestException($body->error, 500);
-            }
+            $error = $body->error;
+            $message = is_object($error) ? ($error->message ?? null) : $error;
+            $code = is_object($error) && is_numeric($error->code ?? null) ? (int) $error->code : 500;
+            $message = is_string($message) ? $message : 'Sportmonks returned an API error.';
 
-            return $response;
+            throw new ApiRequestException(str_replace($this->apiToken, '[redacted]', $message), $code);
         }
 
         if ($this->withoutData) {
