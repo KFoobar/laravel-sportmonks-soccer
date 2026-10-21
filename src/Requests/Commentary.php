@@ -3,11 +3,12 @@
 namespace Sportmonks\SoccerAPI\Requests;
 
 use Sportmonks\SoccerAPI\SoccerAPIClient;
+use stdClass;
 
 class Commentary extends SoccerAPIClient
 {
-    public function byMatchId($matchId)
+    public function byMatchId(int $matchId): stdClass|array|null
     {
-        return $this->callData('commentaries/fixture/' . $matchId);
+        return $this->call("football/commentaries/fixtures/{$matchId}");
     }
 }

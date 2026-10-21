@@ -2,50 +2,55 @@
 
 namespace Sportmonks\SoccerAPI\Requests;
 
-use Carbon\Carbon;
+use DateTimeInterface;
+use InvalidArgumentException;
 use Sportmonks\SoccerAPI\SoccerAPIClient;
+use stdClass;
 
 class Fixture extends SoccerAPIClient
 {
-    public function betweenDates($fromDate, $toDate)
+    public function all(): stdClass|array|null
     {
-        if ($fromDate instanceof Carbon) {
-            $fromDate = $fromDate->format('Y-m-d');
+        return $this->call('football/fixtures');
+    }
+
+    public function betweenDates(DateTimeInterface|string $fromDate, DateTimeInterface|string $toDate): stdClass|array|null
+    {
+        return $this->call('football/fixtures/between/' . $this->date($fromDate) . '/' . $this->date($toDate));
+    }
+
+    public function byDate(DateTimeInterface|string $date): stdClass|array|null
+    {
+        return $this->call('football/fixtures/date/' . $this->date($date));
+    }
+
+    public function byId(int $id): stdClass|array|null
+    {
+        return $this->call("football/fixtures/{$id}");
+    }
+
+    public function byMatchId(int $id): stdClass|array|null
+    {
+        return $this->byId($id);
+    }
+
+    public function headToHead(int $firstTeamId, int $secondTeamId): stdClass|array|null
+    {
+        return $this->call("football/fixtures/head-to-head/{$firstTeamId}/{$secondTeamId}");
+    }
+
+    public function multi(array $ids): stdClass|array|null
+    {
+        if ($ids === []) {
+            throw new InvalidArgumentException('At least one fixture ID is required.');
         }
 
-        if ($toDate instanceof Carbon) {
-            $toDate = $toDate->format('Y-m-d');
+        foreach ($ids as $id) {
+            if (!is_int($id) || $id < 1) {
+                throw new InvalidArgumentException('Fixture IDs must be positive integers.');
+            }
         }
 
-        return $this->callData('fixtures/between/' . $fromDate . '/' .$toDate);
-    }
-
-    public function byDate($date)
-    {
-        if ($date instanceof Carbon) {
-            $date = $date->format('Y-m-d');
-        }
-
-        return $this->callData('fixtures/date/' . $date);
-    }
-
-    public function byId($id)
-    {
-        return $this->byMatchId($id);
-    }
-
-    public function byMatchId($id)
-    {
-        return $this->call('fixtures/' . $id);
-    }
-
-    public function headToHead($firstTeamId, $secondTeamId)
-    {
-        return $this->call('head2head/' . $firstTeamId . '/' . $secondTeamId);
-    }
-
-    public function multi($array)
-    {
-        return $this->call('fixtures/multi/' . join(',', $array));
+        return $this->call('football/fixtures/multi/' . implode(',', $ids));
     }
 }
