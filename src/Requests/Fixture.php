@@ -29,6 +29,11 @@ class Fixture extends SoccerAPIClient
         return $this->callData('fixtures/date/' . $date);
     }
 
+    public function byId($id)
+    {
+        return $this->byMatchId($id);
+    }
+
     public function byMatchId($id)
     {
         return $this->call('fixtures/' . $id);
