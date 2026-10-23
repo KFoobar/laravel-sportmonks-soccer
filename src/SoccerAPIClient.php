@@ -2,204 +2,180 @@
 
 namespace Sportmonks\SoccerAPI;
 
-use GuzzleHttp\Client;
-use GuzzleHttp\ClientInterface;
-use GuzzleHttp\Exception\ConnectException;
-use GuzzleHttp\Exception\RequestException;
-use GuzzleHttp\Psr7\Uri;
+use DateTimeImmutable;
+use DateTimeInterface;
+use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\Factory;
+use Illuminate\Http\Client\Response;
+use InvalidArgumentException;
 use JsonException;
 use Sportmonks\SoccerAPI\Exceptions\ApiRequestException;
+use stdClass;
 
 class SoccerAPIClient
 {
-    protected $client;
-    protected $apiToken;
-    protected $withoutData;
-    protected $include = [];
-    protected $leagues = [];
-    protected $perPage = 50;
-    protected $page = 1;
-    protected $timezone;
-    
-    /**
-     * Constructs a new instance.
-     *
-     * @throws \InvalidArgumentException
-     */
-    public function __construct(?ClientInterface $client = null)
+    protected Factory $http;
+    protected string $apiToken;
+    protected string $baseUrl;
+    protected bool $withoutData;
+    protected string $include = '';
+    protected string $filters = '';
+    protected string $select = '';
+    protected int $perPage = 50;
+    protected int $page = 1;
+    protected ?string $timezone;
+    protected float $timeout;
+    protected float $connectTimeout;
+
+    public function __construct(?Factory $http = null)
     {
-        $this->client = $client ?? new Client([
-            'base_uri'  => config('sportmonks.api_url'),
-            'verify'    => true,
-        ]);
+        $this->http = $http ?? resolve(Factory::class);
+        $this->apiToken = (string) config('sportmonks.api_token');
 
-        $this->apiToken = config('sportmonks.api_token');
-
-        if (empty($this->apiToken)) {
-            throw new \InvalidArgumentException('No API token set');
+        if (trim($this->apiToken) === '') {
+            throw new InvalidArgumentException('No API token set.');
         }
 
-        $this->timezone = !empty(config('sportmonks.timezone'))
-            ? config('sportmonks.timezone')
-            : config('app.timezone');
+        $this->baseUrl = rtrim((string) config('sportmonks.api_url'), '/') . '/';
+        $url = parse_url($this->baseUrl);
 
-        $this->withoutData = !empty(config('sportmonks.skip_data'))
-            ? config('sportmonks.skip_data')
-            : false;
+        if (!$url || ($url['scheme'] ?? null) !== 'https' || empty($url['host'])
+            || isset($url['user']) || isset($url['pass']) || isset($url['query']) || isset($url['fragment'])) {
+            throw new InvalidArgumentException('The Sportmonks API URL must be an HTTPS base URL without credentials, a query or a fragment.');
+        }
+
+        $this->timezone = config('sportmonks.timezone') ?: config('app.timezone');
+        $this->withoutData = (bool) config('sportmonks.skip_data', false);
+        $this->timeout = (float) config('sportmonks.timeout', 30);
+        $this->connectTimeout = (float) config('sportmonks.connect_timeout', 10);
+
+        if (!is_finite($this->timeout) || !is_finite($this->connectTimeout)
+            || $this->timeout <= 0 || $this->connectTimeout <= 0) {
+            throw new InvalidArgumentException('Sportmonks timeouts must be positive, finite numbers.');
+        }
     }
 
-    /**
-     * Builds the query and parses the response.
-     *
-     * @param  string $url
-     * @param  bool   $hasData
-     *
-     * @throws \Sportmonks\SoccerAPI\Exceptions\ApiRequestException
-     *
-     * @return mixed
-     */
-    protected function call(string $url, bool $hasData = false)
+    protected function call(string $path): stdClass|array|null
     {
-        $query = [
-            'api_token' => $this->apiToken,
-            'per_page'  => $this->perPage,
-            'page'      => $this->page
-        ];
+        $query = ['per_page' => $this->perPage, 'page' => $this->page];
 
-        if (!empty($this->include)) {
-            $query['include'] = $this->include;
-        }
-
-        if ($this->timezone) {
-            $query['tz'] = $this->timezone;
-        }
-
-        if (!empty($this->leagues)) {
-            $query['leagues'] = $this->leagues;
+        foreach (['include' => $this->include, 'filters' => $this->filters, 'select' => $this->select, 'timezone' => $this->timezone] as $key => $value) {
+            if ($value !== null && $value !== '') {
+                $query[$key] = $value;
+            }
         }
 
         try {
-            $response = $this->client->request('GET', $url, [
-                'query' => $query,
-                'verify' => true,
-                'timeout' => config('sportmonks.timeout', 30),
-                'connect_timeout' => config('sportmonks.connect_timeout', 10),
-                'allow_redirects' => false,
-            ]);
-        } catch (ConnectException $exception) {
-            $request = $exception->getRequest();
-            $request = $request->withUri(Uri::withoutQueryValue($request->getUri(), 'api_token'));
-
-            throw new ConnectException('Unable to connect to Sportmonks.', $request);
-        } catch (RequestException $exception) {
-            $request = $exception->getRequest();
-            $request = $request->withUri(Uri::withoutQueryValue($request->getUri(), 'api_token'));
-            $exceptionClass = get_class($exception);
-
-            throw new $exceptionClass('Sportmonks HTTP request failed.', $request, $exception->getResponse());
-        }
-
-        if ($response->getStatusCode() >= 300) {
-            throw new ApiRequestException('Sportmonks returned an unsuccessful response.', $response->getStatusCode());
+            $response = $this->http->acceptJson()
+                ->withHeaders(['Authorization' => $this->apiToken])
+                ->withOptions(['verify' => true, 'allow_redirects' => false])
+                ->timeout($this->timeout)
+                ->connectTimeout($this->connectTimeout)
+                ->get($this->baseUrl . $path, $query);
+        } catch (ConnectionException $exception) {
+            throw new ApiRequestException('Unable to connect to Sportmonks.');
         }
 
         try {
-            $body = json_decode((string) $response->getBody(), false, 512, JSON_THROW_ON_ERROR);
+            $body = json_decode($response->body(), false, 512, JSON_THROW_ON_ERROR);
         } catch (JsonException $exception) {
-            throw new ApiRequestException('Sportmonks returned invalid JSON.', 0, $exception);
+            throw new ApiRequestException(
+                'Sportmonks returned invalid JSON.',
+                $response->status(),
+                $this->retryAfter($response),
+            );
         }
 
-        if (!is_object($body)) {
-            throw new ApiRequestException('Sportmonks returned an invalid response object.');
+        if (!$response->successful() || (is_object($body) && property_exists($body, 'error'))) {
+            throw new ApiRequestException(
+                'Sportmonks request failed (HTTP ' . $response->status() . ').',
+                $response->status(),
+                $this->retryAfter($response, $body),
+            );
         }
 
-        if (property_exists($body, 'error')) {
-            $error = $body->error;
-            $message = is_object($error) ? ($error->message ?? null) : $error;
-            $code = is_object($error) && is_numeric($error->code ?? null) ? (int) $error->code : 500;
-            $message = is_string($message) ? $message : 'Sportmonks returned an API error.';
-
-            throw new ApiRequestException(str_replace($this->apiToken, '[redacted]', $message), $code);
+        if (!$body instanceof stdClass || !property_exists($body, 'data')
+            || (!is_array($body->data) && !$body->data instanceof stdClass && $body->data !== null)) {
+            throw new ApiRequestException('Sportmonks returned an invalid response envelope.', $response->status());
         }
 
-        if ($this->withoutData) {
-            return $body->data ?? null;
-        }
-
-        return $body;
+        return $this->withoutData ? $body->data : $body;
     }
 
-    /**
-     * Sends the request to the API.
-     *
-     * @param string $url
-     *
-     * @return mixed
-     */
-    protected function callData(string $url)
+    protected function retryAfter(Response $response, mixed $body = null): ?int
     {
-        return $this->call($url, true);
-    }
+        $retryAfter = $response->header('Retry-After');
 
-    /**
-     * Sets the include.
-     *
-     * @param string|array $include
-     *
-     * @return self
-     */
-    public function setInclude($include)
-    {
-        if (is_array($include) && !empty($include)) {
-            $include = implode(',', $include);
+        if ($retryAfter !== '') {
+            if (ctype_digit($retryAfter)) {
+                return (int) $retryAfter;
+            }
+
+            $timestamp = strtotime($retryAfter);
+
+            if ($timestamp !== false) {
+                return max(0, $timestamp - time());
+            }
         }
 
-        $this->include = $include;
+        $seconds = $body instanceof stdClass ? ($body->rate_limit->resets_in_seconds ?? null) : null;
+
+        return is_int($seconds) && $seconds >= 0 ? $seconds : null;
+    }
+
+    protected function date(DateTimeInterface|string $date): string
+    {
+        if ($date instanceof DateTimeInterface) {
+            return $date->format('Y-m-d');
+        }
+
+        $parsed = DateTimeImmutable::createFromFormat('!Y-m-d', $date);
+
+        if ($parsed === false || $parsed->format('Y-m-d') !== $date) {
+            throw new InvalidArgumentException('Dates must use the Y-m-d format.');
+        }
+
+        return $date;
+    }
+
+    public function setInclude(array|string $include): static
+    {
+        $this->include = is_array($include) ? implode(';', $include) : $include;
 
         return $this;
     }
 
-    /**
-     * Sets the leagues.
-     *
-     * @param string|array $leagues
-     *
-     * @return self
-     */
-    public function setLeagues($leagues)
+    public function setFilters(array|string $filters): static
     {
-        if (is_array($leagues) && !empty($leagues)) {
-            $leagues = implode(',', $leagues);
-        }
-
-        $this->leagues = $leagues;
+        $this->filters = is_array($filters) ? implode(';', $filters) : $filters;
 
         return $this;
     }
 
-    /**
-     * Sets the per page (limit).
-     *
-     * @param int $perPage
-     *
-     * @return self
-     */
-    public function setPerPage(int $perPage)
+    public function setSelect(array|string $select): static
     {
+        $this->select = is_array($select) ? implode(',', $select) : $select;
+
+        return $this;
+    }
+
+    public function setPerPage(int $perPage): static
+    {
+        if ($perPage < 1 || $perPage > 50) {
+            throw new InvalidArgumentException('The page size must be between 1 and 50.');
+        }
+
         $this->perPage = $perPage;
 
         return $this;
     }
 
-    /**
-     * Sets the page.
-     *
-     * @param int $page
-     *
-     * @return self
-     */
-    public function setPage(int $page)
+    public function setPage(int $page): static
     {
+        if ($page < 1) {
+            throw new InvalidArgumentException('The page number must be positive.');
+        }
+
         $this->page = $page;
 
         return $this;
