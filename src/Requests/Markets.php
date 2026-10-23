@@ -3,17 +3,16 @@
 namespace Sportmonks\SoccerAPI\Requests;
 
 use Sportmonks\SoccerAPI\SoccerAPIClient;
-use stdClass;
 
 class Markets extends SoccerAPIClient
 {
-    public function all(): stdClass|array|null
+    public function all()
     {
-        return $this->call('odds/markets');
+        return $this->callData('markets');
     }
 
-    public function byId(int $marketId): stdClass|array|null
+    public function byId($marketsId)
     {
-        return $this->call("odds/markets/{$marketId}");
+        return $this->call('markets/' . $marketsId);
     }
 }

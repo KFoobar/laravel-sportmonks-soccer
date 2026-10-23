@@ -3,12 +3,11 @@
 namespace Sportmonks\SoccerAPI\Requests;
 
 use Sportmonks\SoccerAPI\SoccerAPIClient;
-use stdClass;
 
 class TVStation extends SoccerAPIClient
 {
-    public function byMatchId(int $matchId): stdClass|array|null
+    public function byMatchId($id)
     {
-        return $this->call("football/tv-stations/fixtures/{$matchId}");
+        return $this->call('tvstations/fixture/' . $id);
     }
 }

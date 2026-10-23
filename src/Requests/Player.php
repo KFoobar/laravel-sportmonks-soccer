@@ -3,12 +3,11 @@
 namespace Sportmonks\SoccerAPI\Requests;
 
 use Sportmonks\SoccerAPI\SoccerAPIClient;
-use stdClass;
 
 class Player extends SoccerAPIClient
 {
-    public function byId(int $playerId): stdClass|array|null
+    public function byId($playerId)
     {
-        return $this->call("football/players/{$playerId}");
+        return $this->callData('players/' . $playerId);
     }
 }

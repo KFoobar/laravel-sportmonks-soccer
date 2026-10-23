@@ -3,17 +3,16 @@
 namespace Sportmonks\SoccerAPI\Requests;
 
 use Sportmonks\SoccerAPI\SoccerAPIClient;
-use stdClass;
 
 class LiveScore extends SoccerAPIClient
 {
-    public function today(): stdClass|array|null
+    public function today()
     {
-        return $this->call('football/livescores');
+        return $this->callData('livescores');
     }
 
-    public function now(): stdClass|array|null
+    public function now()
     {
-        return $this->call('football/livescores/inplay');
+        return $this->callData('livescores/now');
     }
 }

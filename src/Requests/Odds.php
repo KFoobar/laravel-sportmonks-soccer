@@ -3,22 +3,21 @@
 namespace Sportmonks\SoccerAPI\Requests;
 
 use Sportmonks\SoccerAPI\SoccerAPIClient;
-use stdClass;
 
 class Odds extends SoccerAPIClient
 {
-    public function byMatchId(int $matchId): stdClass|array|null
+    public function byMatchId($matchId)
     {
-        return $this->call("football/odds/pre-match/fixtures/{$matchId}");
+        return $this->callData('odds/fixture/' . $matchId);
     }
 
-    public function byMatchAndBookmakerId(int $matchId, int $bookmakerId): stdClass|array|null
+    public function byMatchAndBookmakerId($matchId, $bookmakerId)
     {
-        return $this->call("football/odds/pre-match/fixtures/{$matchId}/bookmakers/{$bookmakerId}");
+        return $this->callData('odds/fixture/' . $matchId . '/bookmaker/' . $bookmakerId);
     }
 
-    public function inplayByMatchId(int $matchId): stdClass|array|null
+    public function inplayByMatchId($matchId)
     {
-        return $this->call("football/odds/inplay/fixtures/{$matchId}");
+        return $this->callData('odds/inplay/fixture/' . $matchId);
     }
 }

@@ -6,7 +6,12 @@ use Illuminate\Support\Facades\Facade;
 
 class SoccerAPI extends Facade
 {
-    protected static function getFacadeAccessor(): string
+    /**
+     * Get the registered name of the component.
+     *
+     * @return string
+     */
+    protected static function getFacadeAccessor()
     {
         return 'soccerapi';
     }

@@ -3,12 +3,11 @@
 namespace Sportmonks\SoccerAPI\Requests;
 
 use Sportmonks\SoccerAPI\SoccerAPIClient;
-use stdClass;
 
 class Head2Head extends SoccerAPIClient
 {
-    public function betweenTeams(int $firstTeamId, int $secondTeamId): stdClass|array|null
+    public function betweenTeams($team1Id, $team2Id)
     {
-        return $this->call("football/fixtures/head-to-head/{$firstTeamId}/{$secondTeamId}");
+        return $this->callData('head2head/' . $team1Id . '/' . $team2Id);
     }
 }
